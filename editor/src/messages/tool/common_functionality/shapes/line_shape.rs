@@ -27,6 +27,8 @@ pub struct LineToolData {
 	pub drag_start: DVec2,
 	pub drag_current: DVec2,
 	pub angle: f64,
+	/// Whether Control may lock the angle, which it only may once pressed after the drag has begun.
+	pub angle_lock_armed: bool,
 	pub weight: f64,
 	pub selected_layers_with_position: HashMap<LayerNodeIdentifier, [DVec2; 2]>,
 	pub editing_layer: Option<LayerNodeIdentifier>,
@@ -129,6 +131,9 @@ pub fn generate_line(tool_data: &mut ShapeToolData, snap_session: &mut SnapSessi
 	let pointer = document_to_viewport.inverse().transform_point2(tool_data.line_data.drag_current);
 
 	// Locking keeps the angle the line had, and snapping the angle turns it to the nearest step, and either way the end stays on that line
+	// Control held since before the drag picks the start point instead, so it only locks the angle once pressed during the drag
+	tool_data.line_data.angle_lock_armed |= !lock_angle;
+	let lock_angle = lock_angle && tool_data.line_data.angle_lock_armed;
 	let direction = if lock_angle {
 		Some(DVec2::from_angle(tool_data.line_data.angle))
 	} else if snap_angle {
@@ -237,23 +242,18 @@ mod test_line_tool {
 	async fn test_line_tool_ctrl_anglelock() {
 		let mut editor = EditorTestUtils::create();
 		editor.new_document().await;
-		editor.drag_tool(ToolType::Line, 0., 0., 100., 100., ModifierKeys::CONTROL).await;
-		if let Some((start, end)) = get_line_endpoints_document(&mut editor).await {
-			let line_vec = end - start;
-			let original_angle = line_vec.angle_to(DVec2::X);
-			editor.drag_tool(ToolType::Line, 0., 0., 200., 50., ModifierKeys::CONTROL).await;
-			if let Some((updated_start, updated_end)) = get_line_endpoints_document(&mut editor).await {
-				let updated_line_vec = updated_end - updated_start;
-				let updated_angle = updated_line_vec.angle_to(DVec2::X);
-				print!("{original_angle:?}");
-				print!("{updated_angle:?}");
-				assert!(
-					line_vec.normalize().dot(updated_line_vec.normalize()).abs() - 1. < 1e-6,
-					"Line angle should be locked when Ctrl is kept pressed"
-				);
-				assert!((updated_start - updated_end).length() > 1., "Line should be able to change length when Ctrl is kept pressed");
-			}
-		}
+		editor.select_tool(ToolType::Line).await;
+
+		// Ctrl is pressed only once the drag is under way, so the line locks to the 45 degree angle it has by then
+		editor.move_mouse(0., 0., ModifierKeys::empty(), MouseKeys::empty()).await;
+		editor.left_mousedown(0., 0., ModifierKeys::empty()).await;
+		editor.move_mouse(100., 100., ModifierKeys::empty(), MouseKeys::LEFT).await;
+		editor.move_mouse(200., 50., ModifierKeys::CONTROL, MouseKeys::LEFT).await;
+		editor.left_mouseup(200., 50., ModifierKeys::CONTROL).await;
+
+		let (start, end) = get_line_endpoints_document(&mut editor).await.expect("a line should be drawn");
+		assert!(start.abs_diff_eq(DVec2::ZERO, 1e-6), "the line starts at {start}");
+		assert!(end.abs_diff_eq(DVec2::new(125., 125.), 1e-6), "the line ends at {end}");
 	}
 
 	#[tokio::test]
@@ -370,6 +370,20 @@ mod test_line_tool {
 		editor.move_mouse(beside_end.x, beside_end.y, ModifierKeys::CONTROL, MouseKeys::empty()).await;
 		let start = shown(&editor).expect("the start of a new line should be shown");
 		assert!(start.abs_diff_eq(end, 1e-6), "the new line would start at {start} rather than {end}");
+	}
+
+	#[tokio::test]
+	async fn a_line_ctrl_dragged_from_an_end_of_a_selected_line_follows_the_pointer() {
+		let mut editor = EditorTestUtils::create();
+		editor.new_document().await;
+		editor.drag_tool(ToolType::Line, 100., 100., 300., 200., ModifierKeys::empty()).await;
+
+		// Ctrl held from before the press picks the existing line's end as the start, which must not lock the new line's angle
+		editor.drag_tool(ToolType::Line, 300., 200., 300., 400., ModifierKeys::CONTROL).await;
+
+		let (start, end) = get_line_endpoints_document(&mut editor).await.expect("a line should have been drawn");
+		assert!(start.abs_diff_eq(DVec2::new(300., 200.), 1e-6), "the line starts at {start}");
+		assert!(end.abs_diff_eq(DVec2::new(300., 400.), 1e-6), "the line ends at {end}");
 	}
 
 	#[tokio::test]

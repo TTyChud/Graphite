@@ -1060,6 +1060,7 @@ impl Fsm for ShapeToolFsmState {
 			}
 			(ShapeToolFsmState::Ready(_), ShapeToolMessage::DragStart) => {
 				tool_data.line_data.drag_start = input.mouse.position;
+				tool_data.line_data.angle_lock_armed = !input.keyboard.key(Key::Control);
 
 				// Snapped position in viewport space
 				let mouse_pos = snap_session
